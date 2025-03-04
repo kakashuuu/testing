@@ -2,7 +2,7 @@ const express = require("express");
 const { spawn } = require("child_process");
 
 const app = express(); // Initialize Express
-const PORT = 3000;
+const PORT = 5000;
 
 app.use(express.json()); // Middleware to parse JSON
 
