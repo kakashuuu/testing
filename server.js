@@ -1,6 +1,5 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
-const pm2 = require('pm2');
 
 const eventUrls = [
   'https://shoob.gg/card-events/summer',
