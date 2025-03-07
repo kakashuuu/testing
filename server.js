@@ -1,11 +1,9 @@
-const puppeteer = require("puppeteer-extra");
-const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+const puppeteer = require("puppeteer");
 const fs = require("fs");
+const path = require("path");
 const { exec } = require("child_process");
 
-puppeteer.use(StealthPlugin());
-
-const eventPages = [
+const eventLinks = [
     "https://shoob.gg/card-events/olympics",
     "https://shoob.gg/card-events/sworn",
     "https://shoob.gg/card-events/gala",
@@ -16,71 +14,68 @@ const eventPages = [
     "https://shoob.gg/card-events/christmas",
     "https://shoob.gg/card-events/halloween",
     "https://shoob.gg/card-events/valentines-day",
-    "https://shoob.gg/card-events/chinese-new-year"
+    "https://shoob.gg/card-events/chinese-new-year",
 ];
 
-let eventCards = [];
-const jsonFile = "event_cards.json";
-if (fs.existsSync(jsonFile)) {
-    eventCards = JSON.parse(fs.readFileSync(jsonFile));
+const outputFile = path.join(__dirname, "event_cards.json");
+
+let scrapedData = [];
+if (fs.existsSync(outputFile)) {
+    scrapedData = JSON.parse(fs.readFileSync(outputFile));
 }
 
-async function scrapeEventCards() {
-    let browser;
+async function scrapeEventCards(url, browser) {
+    let page = await browser.newPage();
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+
+    let hasNextPage = true;
+    let pageNum = 1;
+
+    while (hasNextPage) {
+        console.log(`Scraping page ${pageNum} of ${url}`);
+
+        let cards = await page.evaluate(() => {
+            return [...document.querySelectorAll(".card")].map((card) => ({
+                name: card.querySelector(".card-name")?.innerText.trim() || "N/A",
+                image: card.querySelector(".card-image img")?.src || "N/A",
+                description: card.querySelector(".card-description")?.innerText.trim() || "N/A",
+                tier: card.querySelector(".card-tier")?.innerText.trim() || "N/A",
+            }));
+        });
+
+        scrapedData.push(...cards);
+        fs.writeFileSync(outputFile, JSON.stringify(scrapedData, null, 2));
+
+        const nextButton = await page.$(".pagination-next");
+        if (nextButton) {
+            await nextButton.click();
+            await page.waitForNavigation({ waitUntil: "domcontentloaded" });
+            pageNum++;
+        } else {
+            hasNextPage = false;
+        }
+    }
+
+    await page.close();
+}
+
+(async () => {
     try {
-        browser = await puppeteer.launch({
+        const browser = await puppeteer.launch({
+            executablePath: "/usr/bin/chromium-browser",
             headless: true,
             args: ["--no-sandbox", "--disable-setuid-sandbox"]
         });
 
-        const page = await browser.newPage();
-        await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36");
-
-        for (let eventUrl of eventPages) {
-            let currentPage = 1;
-            while (true) {
-                try {
-                    let eventPageUrl = `${eventUrl}?page=${currentPage}`;
-                    await page.goto(eventPageUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
-                    console.log(`Scraping: ${eventPageUrl}`);
-
-                    const cardLinks = await page.$$eval("a[href^='/cards/info/']", links => links.map(link => link.href));
-                    if (cardLinks.length === 0) break;
-
-                    for (let link of cardLinks) {
-                        try {
-                            await page.goto(link, { waitUntil: "domcontentloaded", timeout: 30000 });
-
-                            const name = await page.$eval("h1", el => el.innerText.trim());
-                            const image = await page.$eval("img[src*='/cards/']", img => img.src);
-                            const description = await page.$eval("p", el => el.innerText.trim());
-                            const tier = await page.$eval(".tier-label", el => el.innerText.trim());
-
-                            eventCards.push({ name, image, description, tier });
-
-                            fs.writeFileSync(jsonFile, JSON.stringify(eventCards, null, 2));
-                            console.log(`Saved: ${name}`);
-                        } catch (err) {
-                            console.error(`Failed to scrape card: ${link}`);
-                        }
-                    }
-
-                    currentPage++;
-                } catch (err) {
-                    console.error(`Failed to load event page: ${eventUrl}`);
-                    break;
-                }
-            }
+        for (const eventLink of eventLinks) {
+            await scrapeEventCards(eventLink, browser);
         }
+
+        await browser.close();
+        console.log("Scraping completed.");
     } catch (error) {
         console.error("Scraping failed:", error);
-        console.log("Restarting script...");
-        exec("pm2 restart scraper", (err, stdout, stderr) => {
-            if (err) console.error("PM2 restart failed:", stderr);
-        });
-    } finally {
-        if (browser) await browser.close();
+        console.log("Restarting scraper...");
+        exec("pm2 restart scraper");
     }
-}
-
-scrapeEventCards();
+})();
