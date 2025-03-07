@@ -1,89 +1,95 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
-
-async function fetchCardDetailsFromPage(page) {
-    return await page.evaluate(() => {
-        const cards = [];
-        const cardElements = document.querySelectorAll('.card-item'); // Adjust the selector based on the website's structure
-
-        cardElements.forEach((card) => {
-            const name = card.querySelector('.card-name') ? card.querySelector('.card-name').innerText : null;
-            const tier = card.querySelector('.card-tier') ? card.querySelector('.card-tier').innerText : null;
-            const imageUrl = card.querySelector('.card-image img') ? card.querySelector('.card-image img').src : null;
-            const description = card.querySelector('.card-description') ? card.querySelector('.card-description').innerText : null;
-            
-            cards.push({ name, tier, imageUrl, description });
-        });
-
-        return cards;
-    });
-}
-
-async function scrapeEventCards(eventUrl) {
-    const browser = await puppeteer.launch({ headless: true });
-    const page = await browser.newPage();
-    let allCardDetails = [];
-
-    // Loop through all pages for a specific event
-    let pageNum = 1;
-    let hasMorePages = true;
-
-    while (hasMorePages) {
-        await page.goto(`${eventUrl}?page=${pageNum}`);
-        
-        // Wait for the page to load completely
-        await page.waitForSelector('.card-item');
-
-        const cardDetails = await fetchCardDetailsFromPage(page);
-        allCardDetails = [...allCardDetails, ...cardDetails];
-
-        // Check if there is a next page button
-        const nextPageButton = await page.$('.pagination .next');
-        if (nextPageButton) {
-            pageNum++;
-        } else {
-            hasMorePages = false;
-        }
-    }
-
-    await browser.close();
-    
-    return allCardDetails;
-}
-
-async function scrapeAllEvents(eventUrls) {
-    for (let eventUrl of eventUrls) {
-        console.log(`Scraping event: ${eventUrl}`);
-        const cardDetails = await scrapeEventCards(eventUrl);
-        const eventName = eventUrl.split('/').pop();
-        
-        // Save the card details in a JSON file
-        fs.writeFileSync(`./${eventName}_cards.json`, JSON.stringify(cardDetails, null, 2));
-        console.log(`Finished scraping event: ${eventUrl}`);
-    }
-}
+const pm2 = require('pm2');
 
 const eventUrls = [
-    'https://shoob.gg/card-events/summer',
-    'https://shoob.gg/card-events/maid-day',
-    'https://shoob.gg/card-events/my-hero-academia-ccg',
-    'https://shoob.gg/card-events/easter',
-    'https://shoob.gg/card-events/christmas',
-    'https://shoob.gg/card-events/halloween',
-    'https://shoob.gg/card-events/valentines-day',
-    'https://shoob.gg/card-events/chinese-new-year',
-    'https://shoob.gg/card-events/olympics',
-    'https://shoob.gg/card-events/sworn',
-    'https://shoob.gg/card-events/gala',
-    'https://shoob.gg/card-events/maid-day',
-    'https://shoob.gg/card-events/my-hero-academia-ccg',
-    'https://shoob.gg/card-events/easter',
-    'https://shoob.gg/card-events/christmas',
-    'https://shoob.gg/card-events/halloween',
-    'https://shoob.gg/card-events/valentines-day',
-    'https://shoob.gg/card-events/chinese-new-year'
+  'https://shoob.gg/card-events/summer',
+  'https://shoob.gg/card-events/maid-day',
+  'https://shoob.gg/card-events/my-hero-academia-ccg',
+  'https://shoob.gg/card-events/easter',
+  'https://shoob.gg/card-events/christmas',
+  'https://shoob.gg/card-events/halloween',
+  'https://shoob.gg/card-events/valentines-day',
+  'https://shoob.gg/card-events/chinese-new-year',
+  'https://shoob.gg/card-events/olympics',
+  'https://shoob.gg/card-events/sworn',
+  'https://shoob.gg/card-events/gala'
 ];
 
-scrapeAllEvents(eventUrls)
-    .then(() => console.log('All events scraped successfully'))
-    .catch(err => console.error('Error scraping events:', err));
+const scrapeEvent = async (url) => {
+  console.log(`Scraping event: ${url}`);
+
+  const browser = await puppeteer.launch({
+    headless: true,
+    executablePath: '/snap/bin/chromium',
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--headless', '--disable-gpu']
+  });
+
+  const page = await browser.newPage();
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+
+  let allCards = [];
+
+  const getCardsFromPage = async () => {
+    const cards = await page.evaluate(() => {
+      const cardElements = document.querySelectorAll('.card-item'); // Adjust selector as needed
+      const cardData = [];
+
+      cardElements.forEach(card => {
+        const name = card.querySelector('.card-name')?.textContent.trim();
+        const tier = card.querySelector('.card-tier')?.textContent.trim();
+        const imageUrl = card.querySelector('.card-image img')?.src;
+        const description = card.querySelector('.card-description')?.textContent.trim();
+
+        if (name && tier && imageUrl && description) {
+          cardData.push({ name, tier, imageUrl, description });
+        }
+      });
+
+      return cardData;
+    });
+
+    return cards;
+  };
+
+  // Scrape all pages
+  while (true) {
+    const cards = await getCardsFromPage();
+    allCards = allCards.concat(cards);
+
+    // Check if there is a next page
+    const nextButton = await page.$('.pagination-next'); // Adjust selector as needed
+    if (!nextButton) {
+      break; // No more pages
+    }
+
+    // Click next page
+    await nextButton.click();
+    await page.waitForTimeout(2000); // Wait for the next page to load
+  }
+
+  // Save the data to a file
+  const fileName = `eventData_${url.split('/').pop()}.json`;
+  fs.writeFileSync(fileName, JSON.stringify(allCards, null, 2));
+
+  console.log(`Finished scraping event: ${url}`);
+  await browser.close();
+};
+
+const scrapeAllEvents = async () => {
+  for (let i = 0; i < eventUrls.length; i++) {
+    try {
+      await scrapeEvent(eventUrls[i]);
+    } catch (error) {
+      console.error(`Error scraping events: ${error.message}`);
+      // Restart scraper.js using PM2 if an error occurs
+      pm2.restart('scraper.js', (err) => {
+        if (err) {
+          console.error('PM2 restart failed:', err);
+        }
+      });
+    }
+  }
+};
+
+scrapeAllEvents();
